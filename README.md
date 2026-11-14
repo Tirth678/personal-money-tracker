@@ -5,15 +5,15 @@ A mobile-responsive Next.js + Express spending tracker backed only by Neon Postg
 ## Deploy to Vercel
 
 1. Import this GitHub repository into Vercel. Deploy the branch containing these changes.
-2. Choose **Next.js** as the framework, repository root as the root directory, and Node.js **22.x**. Keep the output-directory override empty. `vercel.json` sets `npm ci` and `npm run build`.
+2. Choose **Next.js** as the framework, repository root as the root directory, and Node.js **22.x**. Keep the output-directory override empty. `vercel.json` sets `npm ci` and `npm run build:vercel`.
 3. Add a server-only **`DATABASE_URL`** environment variable using your Neon pooled PostgreSQL connection string, with TLS enabled. Set it for the intended deployment environment(s). Do not use a `NEXT_PUBLIC_` prefix.
 4. Optional: add **`NEON_REALTIME_URL`** and **`NEON_REALTIME_SECRET`** from Neon to enable live subscriptions. Without these, data still refreshes from Postgres every 30 seconds, on focus, and after each mutation.
-5. Apply the migrations once from a trusted terminal with the database environment configured:
+5. Vercel now applies migrations automatically before building whenever `DATABASE_URL` is configured. Production builds fail clearly if it is missing or migrations fail. To apply migrations manually from a trusted terminal:
    ```sh
    npm ci
    npm run migrate
    ```
-   This applies `db/001_expenses.sql` and `db/002_workspaces.sql`. Existing expenses are retained in the **Personal** workspace. Migrations are deliberately **not** run during every build or API request. Use a separate Neon branch/database for preview deployments to avoid sharing production financial data.
+   This applies `db/001_expenses.sql` and `db/002_workspaces.sql`. Existing expenses are retained in the **Personal** workspace. The migrations are idempotent, preserve existing expenses, and use a database advisory lock to serialize concurrent deployments. They never run inside API requests. Use a separate Neon branch/database for preview deployments to avoid sharing production financial data.
 6. Deploy or redeploy after adding/changing environment variables. Verify `/api/health` returns 200, then create a workspace and test adding/deleting an expense.
 
 The repository is prepared for deployment; no Vercel project has been created or modified and no deployment has been published by this task. The local `.env.local` is Git-ignored and is **not** automatically transferred to Vercel. Add environment values through Vercel's secure project settings. Rotate the database password previously shared in chat before production use.
@@ -22,7 +22,7 @@ The repository is prepared for deployment; no Vercel project has been created or
 
 - Next.js serves the UI normally, without a custom server.
 - `pages/api/[...path].ts` is a Node API route that passes the original request/response to the shared **Express** application in `server/app.mjs`. Body parsing is disabled in Next so Express handles JSON parsing and validation consistently. All browser API URLs are relative/same-origin.
-- `server/db.mjs` reuses a small `pg` pool. On Vercel it registers with `attachDatabasePool` for Fluid compute lifecycle management. There are no database queries during builds.
+- `server/db.mjs` reuses a small `pg` pool. On Vercel it registers with `attachDatabasePool` for Fluid compute lifecycle management. `npm run build` is database-independent; the Vercel-specific `build:vercel` step applies migrations first.
 - The API function has a 60-second duration budget. SSE requests terminate after 50 seconds (including subscription setup), clean up timers/subscriptions on response close, and reconnect using the browser's EventSource behavior. Keep Fluid compute enabled. Realtime is optional and consumes function execution time while connected.
 - `server/index.mjs` remains an optional standalone Express/Next entrypoint for container/Node hosting; Vercel does not use it.
 - The dashboard and API never store money data on the client. React holds only current fetched view data and unsaved form state. API responses use `Cache-Control: no-store`.
@@ -60,7 +60,7 @@ Both scripts bind to `0.0.0.0` for hosted previews. Optional standalone server: 
 
 ## API
 
-- `GET /api/health`: Postgres connectivity probe; indicates whether Realtime variables are configured, not whether a subscription is healthy
+- `GET /api/health`: verifies both Postgres connectivity and the columns used by the tracker; indicates whether Realtime variables are configured, not whether a subscription is healthy
 - `GET /api/workspaces`: database workspace IDs/names
 - `POST /api/workspaces`: `{ "name": "Travel" }`
 - `GET /api/expenses?workspace_id=<uuid>`: workspace ledger
@@ -86,7 +86,7 @@ The sandbox could not reach the Neon control-plane API. A supplied PostgreSQL co
 ## Tests and verified results
 
 ```sh
-npm test          # six currency/category/date/workspace validation tests
+npm test          # eight tests, including actual SQL migration checks in embedded PostgreSQL
 npm run build    # production build, includes /api/[...path] as a dynamic route
 npm start        # separate terminal
 npm run test:smoke # eight real HTTP routing/validation checks, no database writes
@@ -98,7 +98,7 @@ For a different port or deployment, set `TEST_URL=https://your-deployment.vercel
 Verified after the Vercel changes:
 
 ```text
-npm test: 6 passed, 0 failed
+npm test: 8 passed, 0 failed
 npm run build: compiled successfully; TypeScript passed
 Route (app): /, /_not-found
 Route (pages): ƒ /api/[...path]
@@ -116,3 +116,18 @@ Database health: 503 (connection terminates unexpectedly)
 ```
 
 Database migrations, actual persistence, and Neon Realtime remain **unverified** due to database connectivity. No published Vercel deployment has been tested. Build and routing readiness do not imply a working database.
+
+## Follow-up: live database diagnosis and migration fix
+
+The existing public production deployment was checked read-only:
+
+- `/api/health` returned `{ "database": "connected", "realtime": false }`.
+- `/api/workspaces` and `/api/expenses` both returned the old generic database request error.
+
+This establishes that the deployed app can connect to Postgres; the earlier local connection failure is not evidence of a current production connection failure. Missing/outdated schema is a likely cause, but the old public error hides the precise SQL error. No credentials were decrypted and no production rows were changed during this investigation.
+
+This branch changes the deployment pipeline to apply the existing SQL migrations, checks actual app columns in the health endpoint, and returns curated error codes (`DB_SCHEMA_MISSING`, `DB_AUTH_FAILED`, `DB_PERMISSION_DENIED`, `DB_NOT_CONFIGURED`, `DB_UNAVAILABLE`) without disclosing raw database errors. The dashboard no longer describes every ledger loading failure as an unreachable database.
+
+Tests execute both SQL files against embedded PostgreSQL (test-only PGlite) and verify reruns, preservation of existing entries, workspace scoping, and deletion. This is not a substitute for a live Neon integration test. Production build and all eight unit/migration tests passed. A production Vercel build without DATABASE_URL was also verified to stop with a clear error.
+
+**These changes must be deployed before the live site benefits.** The deployed version has not been changed by this investigation. On successful deployment, health should return `database: connected` and `schema: ready`; if a build migration fails, inspect that build's migration error code instead of repeatedly changing the connection string.

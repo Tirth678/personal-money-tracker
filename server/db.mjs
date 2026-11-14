@@ -7,6 +7,6 @@ export const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: p
 if (pool && process.env.VERCEL) attachDatabasePool(pool);
 pool?.on('error', (err) => console.error('Database pool:', err.message));
 export function database() {
-  if (!pool) { const e = new Error('Database is not connected. Configure DATABASE_URL and run npm run migrate.'); e.status = 503; throw e; }
+  if (!pool) { const e = new Error('Database is not connected. Configure DATABASE_URL and run npm run migrate.'); e.status = 503; e.code = 'DB_NOT_CONFIGURED'; throw e; }
   return pool;
 }
