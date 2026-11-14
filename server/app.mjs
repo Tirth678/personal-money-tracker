@@ -1,7 +1,8 @@
 import express from 'express';
+import { fetchFund } from './fund.mjs';
 import { databaseError } from './database-errors.mjs';
 import { database } from './db.mjs';
-import { expenseInput, toCents, workspaceId, workspaceInput } from './validation.mjs';
+import { expenseInput, toCents, workspaceId, workspaceInput, investmentInput } from './validation.mjs';
 import { z } from 'zod';
 import { createRealtime, rawSql } from '@neon/realtime/server';
 const app = express();
@@ -21,6 +22,7 @@ app.get('/api/health', async (_req, res) => {
     // Check the actual columns queried by the app, not just a TCP/SQL ping.
     await database().query('SELECT id, name FROM workspaces LIMIT 0');
     await database().query('SELECT id, amount_cents, category, note, spent_on, created_at, workspace_id FROM expenses LIMIT 0');
+    await database().query('SELECT id, workspace_id, amount_cents, invested_on, kind, units FROM investments LIMIT 0');
     res.json({ database: 'connected', schema: 'ready', realtime: !!(process.env.NEON_REALTIME_URL && process.env.NEON_REALTIME_SECRET) });
   } catch (e) {
     console.error('Database health failed:', e.code || 'UNKNOWN');
@@ -46,6 +48,40 @@ app.post('/api/expenses', async (req, res, next) => {
 });
 app.delete('/api/expenses/:id', async (req, res, next) => {
   try { const id = z.uuid().parse(req.params.id); const workspace = workspaceId.parse(req.query.workspace_id); const result = await database().query('DELETE FROM expenses WHERE id = $1 AND workspace_id = $2 RETURNING id', [id, workspace]); if (!result.rowCount) return res.status(404).json({ error: 'Entry not found.' }); res.status(204).end(); } catch (e) { next(e); }
+});
+app.get('/api/fund', async (_req, res) => {
+  try { res.json(await fetchFund()); }
+  catch { res.status(502).json({code:'NAV_UNAVAILABLE', error:'Latest NAV could not be fetched. Contributions remain saved; retry to update valuation.'}); }
+});
+app.get('/api/investments', async (req,res,next) => {
+  try {
+    const workspace=workspaceId.parse(req.query.workspace_id);
+    const {rows}=await database().query("SELECT id, amount_cents::text, to_char(invested_on,'YYYY-MM-DD') AS invested_on, kind, units::text, unit_source, note FROM investments WHERE workspace_id=$1 ORDER BY invested_on DESC, created_at DESC",[workspace]);
+    res.json({investments:rows});
+  } catch(e) {next(e);}
+});
+app.post('/api/investments', async (req,res,next) => {
+  try {
+    const workspace=workspaceId.parse(req.query.workspace_id), input=investmentInput.parse(req.body);
+    const {rows}=await database().query('INSERT INTO investments(workspace_id,amount_cents,invested_on,kind,units,unit_source,note) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id',[workspace,toCents(input.amount),input.invested_on,input.kind,input.units || null,input.units?'statement':'unavailable',input.note]);
+    res.status(201).json(rows[0]);
+  } catch(e) {next(e);}
+});
+app.put('/api/investments/:id', async (req,res,next) => {
+  try {
+    const workspace=workspaceId.parse(req.query.workspace_id), id=z.uuid().parse(req.params.id), input=investmentInput.parse(req.body);
+    const result=await database().query('UPDATE investments SET amount_cents=$1, invested_on=$2, kind=$3, units=$4, unit_source=$5, note=$6 WHERE id=$7 AND workspace_id=$8 RETURNING id',[toCents(input.amount),input.invested_on,input.kind,input.units || null,input.units?'statement':'unavailable',input.note,id,workspace]);
+    if(!result.rowCount) return res.status(404).json({error:'Investment not found.'});
+    res.json(result.rows[0]);
+  } catch(e) {next(e);}
+});
+app.delete('/api/investments/:id', async (req,res,next) => {
+  try {
+    const workspace=workspaceId.parse(req.query.workspace_id), id=z.uuid().parse(req.params.id);
+    const result=await database().query('DELETE FROM investments WHERE id=$1 AND workspace_id=$2 RETURNING id',[id,workspace]);
+    if(!result.rowCount) return res.status(404).json({error:'Investment not found.'});
+    res.status(204).end();
+  } catch(e) {next(e);}
 });
 // Neon subscribes on the trusted server; SSE forwards change signals, not credentials.
 app.get('/api/events', async (req, res, next) => {

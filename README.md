@@ -13,7 +13,7 @@ A mobile-responsive Next.js + Express spending tracker backed only by Neon Postg
    npm ci
    npm run migrate
    ```
-   This applies `db/001_expenses.sql` and `db/002_workspaces.sql`. Existing expenses are retained in the **Personal** workspace. The migrations are idempotent, preserve existing expenses, and use a database advisory lock to serialize concurrent deployments. They never run inside API requests. Use a separate Neon branch/database for preview deployments to avoid sharing production financial data.
+   This applies `db/001_expenses.sql`, `db/002_workspaces.sql`, and `db/003_investments.sql`. Existing expenses are retained in the **Personal** workspace. The migrations are idempotent, preserve existing expenses, and use a database advisory lock to serialize concurrent deployments. They never run inside API requests. Use a separate Neon branch/database for preview deployments to avoid sharing production financial data.
 6. Deploy or redeploy after adding/changing environment variables. Verify `/api/health` returns 200, then create a workspace and test adding/deleting an expense.
 
 The repository is prepared for deployment; no Vercel project has been created or modified and no deployment has been published by this task. The local `.env.local` is Git-ignored and is **not** automatically transferred to Vercel. Add environment values through Vercel's secure project settings. Rotate the database password previously shared in chat before production use.
@@ -131,3 +131,60 @@ This branch changes the deployment pipeline to apply the existing SQL migrations
 Tests execute both SQL files against embedded PostgreSQL (test-only PGlite) and verify reruns, preservation of existing entries, workspace scoping, and deletion. This is not a substitute for a live Neon integration test. Production build and all eight unit/migration tests passed. A production Vercel build without DATABASE_URL was also verified to stop with a clear error.
 
 **These changes must be deployed before the live site benefits.** The deployed version has not been changed by this investigation. On successful deployment, health should return `database: connected` and `schema: ready`; if a build migration fails, inspect that build's migration error code instead of repeatedly changing the connection string.
+
+## Investment portfolio and multi-month spending
+
+### Portfolio
+
+The dashboard now includes a workspace-specific **Investments** section, with its own holdings view. Investment contributions also count toward main spending totals; previous/opening holdings do not. All portfolio entries are persisted in PostgreSQL (`investments` table); there is no browser-storage fallback.
+
+- Add monthly/one-time contributions with an investment date, including previous months.
+- Add **Previous holdings** using original invested cost, a holdings-as-of date, and optional statement units. Do not duplicate those holdings with individual old contributions.
+- Edit entries later to fill in allotted units or correct cost/date; delete with confirmation. Deleting here only removes a tracking record, never places a fund redemption.
+- History defaults to all months, with a month filter. Portfolio summary always covers all stored entries, regardless of the history filter.
+- Monthly contribution bars exclude opening/previous holdings so they do not inflate a month's contribution amount.
+- Total invested uses original cost. Current value is total actual statement units multiplied by the latest fetched NAV; unrealized gain is that value minus cost. Return is absolute, not annualized/XIRR. No redemptions, trading, dividend accounting, fees, tax, or investment recommendations are implemented.
+- All entries need actual units for whole-portfolio value/gain. Amount-only records are allowed and cost remains tracked, but valuation stays unavailable until every entry has units. The app does not divide historical investments by today's NAV or guess allotment prices.
+
+### Fund data
+
+The selected instrument is **HDFC Mid Cap Fund — Regular Plan — Growth Option**, AMFI scheme **105758**, not the Direct plan and not a stock. `GET /api/fund` fetches `https://api.mfapi.in/mf/105758/latest` from the server with a timeout, validates the scheme and NAV, and returns the NAV date, fetch timestamp, and source. No provider secret is needed.
+
+Mutual funds publish daily NAVs on business days, not streaming stock quotes. The section refreshes NAV and portfolio every five minutes, on page focus, and offers manual NAV refresh. If a refresh fails, the last fetched value is visibly marked as possibly stale; if no data is available, no fabricated NAV is displayed. NAV fetching is independent of database access, and contributions can be saved even if the provider is down.
+
+The provider response was confirmed through the page-fetch tool for the exact Regular Growth scheme. This sandbox's application runtime cannot reach `api.mfapi.in` because of its outbound network restrictions; the actual runtime HTTP check therefore correctly returned `502 NAV_UNAVAILABLE`. Successful live NAV fetching from the deployed Vercel function still needs checking after deployment. No test fixture is served as live NAV.
+
+### Spending across months
+
+Spending now defaults to **All time**, so food entries in different months both appear. All-time spending rhythm groups records by month. Monthly view includes a month picker and explicitly shows how many expenses are hidden in other months, with a **Show all months** control. Category filters still apply to the transaction list.
+
+### Additional API routes
+
+All investment reads/writes/deletes use `?workspace_id=<uuid>` and parameterized SQL:
+
+- `GET /api/investments`: all entries for the workspace
+- `POST /api/investments`: `{ "amount": "2500.00", "invested_on": "2025-01-15", "kind": "contribution", "units": "12.1234", "note": "January SIP" }`; omit units when unknown; kind can also be `opening`
+- `PUT /api/investments/:id`: update the same fields, scoped to workspace
+- `DELETE /api/investments/:id`: delete the workspace's matching entry
+- `GET /api/fund`: latest published dated NAV for scheme 105758
+
+Vercel's existing migration step applies `003_investments.sql` before deployment; health checks now also verify investment columns. No existing expense rows are modified. Authentication remains disabled; workspace separation is not access control.
+
+### Verification for this change
+
+- `npm ci`: passed (initial tests could not run until dependencies were installed in the fresh checkout).
+- `npm test`: **12 passed**, including actual PostgreSQL migration SQL, previous-month expense preservation, backdated investments, workspace scoping, exact fund selection, and upstream failure handling. Embedded PostgreSQL is test-only.
+- `npm run build`: **passed**, including TypeScript. An initial chart type mismatch was corrected before the successful build.
+- `npm run test:smoke`: **13 passed**, including new investment input, date, workspace, update-ID, and delete-ID checks.
+- Local `/api/fund`: correct explicit `502 NAV_UNAVAILABLE` under sandbox network restrictions.
+- No production deployment or production database writes were performed for this change. Live investment persistence and provider access on Vercel need verification after merging/deploying.
+
+### Contributions included in total spending
+
+Investment **contributions** now count toward the main spending total, daily average, spending rhythm, category charts, transaction list, and CSV exports. They appear as an **Investments** spending group and use their investment dates for month filtering. The original six expense-entry categories remain unchanged.
+
+This is a derived view of the existing database rows: an investment does not create a second expense row. Adding/editing/deleting in the portfolio immediately reloads the main dashboard. Deleting an investment from the main list removes the original investment row and refreshes the portfolio. Monthly filters and workspace boundaries apply to both sources.
+
+Spending counts the contributed amount at cost, never current market value or NAV gains. **Previous holdings** remain part of total invested but are excluded from spending because they represent an opening balance. Do not manually add the same investment again as an ordinary expense.
+
+Follow-up validation: `npm test` **14 passed**, `npm run build` passed. Tests cover inclusion exactly once, opening-holdings exclusion, investment month filtering, edit/delete recomputation, and correct deletion routing. Live investment persistence and NAV runtime verification still require deployment as noted above.
