@@ -1,5 +1,5 @@
 import express from 'express';
-import { fetchFund } from './fund.mjs';
+import { fetchFund, fetchFundHistory } from './fund.mjs';
 import { databaseError } from './database-errors.mjs';
 import { database } from './db.mjs';
 import { expenseInput, toCents, workspaceId, workspaceInput, investmentInput } from './validation.mjs';
@@ -48,6 +48,10 @@ app.post('/api/expenses', async (req, res, next) => {
 });
 app.delete('/api/expenses/:id', async (req, res, next) => {
   try { const id = z.uuid().parse(req.params.id); const workspace = workspaceId.parse(req.query.workspace_id); const result = await database().query('DELETE FROM expenses WHERE id = $1 AND workspace_id = $2 RETURNING id', [id, workspace]); if (!result.rowCount) return res.status(404).json({ error: 'Entry not found.' }); res.status(204).end(); } catch (e) { next(e); }
+});
+app.get('/api/fund/history', async (_req, res) => {
+  try { res.json(await fetchFundHistory()); }
+  catch { res.status(502).json({ code:'NAV_HISTORY_UNAVAILABLE', error:'Historical NAV could not be fetched. Invested cost is still available; retry to see historical portfolio value.' }); }
 });
 app.get('/api/fund', async (_req, res) => {
   try { res.json(await fetchFund()); }

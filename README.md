@@ -188,3 +188,49 @@ This is a derived view of the existing database rows: an investment does not cre
 Spending counts the contributed amount at cost, never current market value or NAV gains. **Previous holdings** remain part of total invested but are excluded from spending because they represent an opening balance. Do not manually add the same investment again as an ordinary expense.
 
 Follow-up validation: `npm test` **14 passed**, `npm run build` passed. Tests cover inclusion exactly once, opening-holdings exclusion, investment month filtering, edit/delete recomputation, and correct deletion routing. Live investment persistence and NAV runtime verification still require deployment as noted above.
+
+## Portfolio growth chart and layout refinement
+
+The investment section now shows **Watch your portfolio grow**, comparing cumulative original invested cost with historical portfolio value in INR. It includes 1M, 6M, 1Y, and All ranges, dated tooltips, cost/value/gain summaries, and explicit loading/empty/provider-error states. The range is measured back from the latest available chart date, independent of the investment-history table filter.
+
+Historical valuation uses the statement units recorded on or before each chart date multiplied by that date's NAV. It does not apply today's NAV to earlier dates or treat contributions as investment returns. Previous holdings begin on their recorded holdings-as-of date; the app does not reconstruct earlier ownership. Non-publishing dates use the last preceding published NAV, whose date is shown in the tooltip. Entries missing units cause the value curve to become unavailable from that entry onward, while invested cost remains visible. Later edits/deletions recompute the chart. No withdrawals/redemptions or annualized returns are modeled.
+
+`GET /api/fund/history` retrieves historical NAV from `https://api.mfapi.in/mf/105758`, validates the exact Regular Growth scheme and every data point, deduplicates dates, and returns chronological data. The public fund history (not user data) is cached on the server for five minutes. The chart refreshes every five minutes and has a manual refresh button. Workspace-specific investments continue to come only from the database. Provider failures return `502 NAV_HISTORY_UNAVAILABLE`; retained history is labeled as potentially stale. No fabricated NAV or locally persisted portfolio data is used.
+
+UI improvements use consistent section gaps, equal-width/aligned summary cards, stable chart heights, readable wrapping footnotes, normalized panel padding and corners, balanced category cards, better fund-card alignment, larger controls, mobile stacking, and reduced-motion support. Icon-only navigation now has accessible names. Dark mode is retained.
+
+### Checks for this change
+
+- `npm test`: **20 passed**, including historical valuation, contribution timing, preceding business-day NAV, missing-unit gaps, opening balances, edits/deletions, range filtering, scheme validation, history sorting, and duplicate dates.
+- `npm run build`: **passed** including TypeScript.
+- `npm run test:smoke`: **13 passed** against the production Next.js server.
+- Runtime `/api/fund/history`: expected **502 NAV_HISTORY_UNAVAILABLE** under this sandbox's outbound restrictions. Live provider success from Vercel still requires verification after deployment.
+- No production database records were changed and no deployment was published. No new database migration or environment variable is required.
+
+## Mobile and web production-hardening pass
+
+- Mobile bottom navigation with visible labels, scroll-aware active state, notch/home-indicator safe-area spacing, and a sticky workspace bar.
+- Transactions and investment history become stacked, labeled cards on small screens instead of forcing sideways table scrolling. Desktop tables remain intact.
+- Larger touch controls; 16px mobile input/select text to prevent iOS auto-zoom; zoom remains enabled. Dialogs scroll within dynamic viewport height and keep actions usable on shorter screens.
+- Accessible skip link, named icon controls, reduced-motion CSS, a recoverable page error boundary, and responsive chart/form sizing.
+- Portfolio code is split into its own chunk. Polling pauses in hidden tabs. Optional Realtime is probed before subscribing, stops in hidden tabs, and reconnects with bounded exponential backoff. History refreshes on focus. No user data is stored offline.
+- Added nosniff, referrer, and permissions-policy headers; removed the framework-identifying response header. Existing Vercel iframe previews are not blocked.
+- `npm run test:smoke` now also checks response security headers.
+
+### Browser and CI checks
+
+The real Chromium script `scripts/ui-smoke.mjs` covers 320px, 390px, 768px, and 1440px viewports: document overflow, long transaction notes, dialog bounds, mobile input text sizing, bottom navigation/tap targets, active section state, dark mode, and client exceptions. It uses clearly isolated API fixtures and therefore **does not** prove live database or NAV access. Screenshots go to Git-ignored `test-results/`.
+
+On a machine with Playwright browser dependencies:
+
+```sh
+npx playwright install --with-deps chromium
+npm run build
+npm run test:ui:serve
+```
+
+Alternatively, start the server separately and run `TEST_URL=http://localhost:3000 npm run test:ui`. `CHROMIUM_PATH` can specify a compatible locally installed Chromium. The GitHub Actions workflow runs unit tests, the production build, installs Chromium with OS dependencies, runs browser checks, and uploads screenshots.
+
+Local validation: production build passed; the unit/migration/growth suite passed; 13 production HTTP checks passed including security headers; production dependency audit reported zero vulnerabilities. The initial local Chromium launch failed because `libnspr4.so`/NSS system libraries are absent. Browser assertions are **not marked passed** locally; their CI run remains pending. The temporary bundled-browser dependency used to diagnose this was removed; standard Playwright is retained as a dev-only tool.
+
+No deployment was published and no production data was modified. Live database/NAV checks and a real-device Safari/Android check remain release gates. Authentication is still intentionally disabled: all visitors can access every workspace. This must not be described as private multi-user financial storage; add authentication or deployment protection before exposing sensitive data.
