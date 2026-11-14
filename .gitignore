@@ -6,3 +6,5 @@ node_modules/
 *.log
 .vercel/
 *.tsbuildinfo
+playwright-report/
+test-results/

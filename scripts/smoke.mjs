@@ -20,6 +20,8 @@ const checks = [
 for (const [label,path,init,status] of checks) {
   const response = await fetch(base+path,{...init,signal:AbortSignal.timeout(15000)});
   assert.equal(response.status,status,label);
+  assert.equal(response.headers.get('x-content-type-options'),'nosniff',label+' security headers');
+  assert.equal(response.headers.get('x-powered-by'),null,label+' framework header');
   if(path.startsWith('/api/')) assert.equal(response.headers.get('cache-control'),'no-store',label+' cache control');
   console.log(`PASS ${label} (${status})`);
 }
