@@ -1,4 +1,5 @@
 import express from 'express';
+import { databaseError } from './database-errors.mjs';
 import { database } from './db.mjs';
 import { expenseInput, toCents, workspaceId, workspaceInput } from './validation.mjs';
 import { z } from 'zod';
@@ -13,7 +14,19 @@ app.use('/api', (req, res, next) => {
   if (!['GET', 'HEAD'].includes(req.method) && origin && new URL(origin).host !== req.get('host') && new URL(origin).host !== req.get('x-forwarded-host')) return res.status(403).json({ error: 'Cross-origin writes are not allowed.' });
   next();
 });
-app.get('/api/health', async (_req, res, next) => { try { await database().query('SELECT 1'); res.json({ database: 'connected', realtime: !!(process.env.NEON_REALTIME_URL && process.env.NEON_REALTIME_SECRET) }); } catch (e) { next(e); } });
+app.get('/api/health', async (_req, res) => {
+  let connected = false;
+  try {
+    await database().query('SELECT 1'); connected = true;
+    // Check the actual columns queried by the app, not just a TCP/SQL ping.
+    await database().query('SELECT id, name FROM workspaces LIMIT 0');
+    await database().query('SELECT id, amount_cents, category, note, spent_on, created_at, workspace_id FROM expenses LIMIT 0');
+    res.json({ database: 'connected', schema: 'ready', realtime: !!(process.env.NEON_REALTIME_URL && process.env.NEON_REALTIME_SECRET) });
+  } catch (e) {
+    console.error('Database health failed:', e.code || 'UNKNOWN');
+    res.status(503).json({ database: connected ? 'connected' : 'unavailable', schema: 'not_ready', ...databaseError(e) });
+  }
+});
 app.get('/api/workspaces', async (_req, res, next) => {
   try { const { rows } = await database().query('SELECT id, name FROM workspaces ORDER BY created_at, id'); res.json({ workspaces: rows }); } catch(e) { next(e); }
 });
@@ -59,7 +72,7 @@ app.use((err, _req, res, _next) => {
   if (err instanceof z.ZodError) return res.status(400).json({ error: err.issues[0].message });
   if (err.code === '23503') return res.status(404).json({ error: 'Workspace not found.' });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON.' });
-  console.error(err.message);
-  res.status(err.status || 503).json({ error: err.status === 503 ? err.message : 'Database request failed. Check the database connection and migration.' });
+  console.error('API request failed:', err.code || 'UNKNOWN');
+  res.status(err.status || 503).json(databaseError(err));
 });
 export default app;
