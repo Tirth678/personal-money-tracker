@@ -136,7 +136,7 @@ Tests execute both SQL files against embedded PostgreSQL (test-only PGlite) and 
 
 ### Portfolio
 
-The dashboard now includes a workspace-specific **Investments** section, separate from spending and expense totals. All portfolio entries are persisted in PostgreSQL (`investments` table); there is no browser-storage fallback.
+The dashboard now includes a workspace-specific **Investments** section, with its own holdings view. Investment contributions also count toward main spending totals; previous/opening holdings do not. All portfolio entries are persisted in PostgreSQL (`investments` table); there is no browser-storage fallback.
 
 - Add monthly/one-time contributions with an investment date, including previous months.
 - Add **Previous holdings** using original invested cost, a holdings-as-of date, and optional statement units. Do not duplicate those holdings with individual old contributions.
@@ -178,3 +178,13 @@ Vercel's existing migration step applies `003_investments.sql` before deployment
 - `npm run test:smoke`: **13 passed**, including new investment input, date, workspace, update-ID, and delete-ID checks.
 - Local `/api/fund`: correct explicit `502 NAV_UNAVAILABLE` under sandbox network restrictions.
 - No production deployment or production database writes were performed for this change. Live investment persistence and provider access on Vercel need verification after merging/deploying.
+
+### Contributions included in total spending
+
+Investment **contributions** now count toward the main spending total, daily average, spending rhythm, category charts, transaction list, and CSV exports. They appear as an **Investments** spending group and use their investment dates for month filtering. The original six expense-entry categories remain unchanged.
+
+This is a derived view of the existing database rows: an investment does not create a second expense row. Adding/editing/deleting in the portfolio immediately reloads the main dashboard. Deleting an investment from the main list removes the original investment row and refreshes the portfolio. Monthly filters and workspace boundaries apply to both sources.
+
+Spending counts the contributed amount at cost, never current market value or NAV gains. **Previous holdings** remain part of total invested but are excluded from spending because they represent an opening balance. Do not manually add the same investment again as an ordinary expense.
+
+Follow-up validation: `npm test` **14 passed**, `npm run build` passed. Tests cover inclusion exactly once, opening-holdings exclusion, investment month filtering, edit/delete recomputation, and correct deletion routing. Live investment persistence and NAV runtime verification still require deployment as noted above.
